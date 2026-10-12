@@ -9,7 +9,7 @@ import CoreServices
 #if Safari
 let bid = "com.apple.Safari" as CFString
 #else
-let bid = "dev.brickpop.privatelink" as CFString
+let bid = "org.private.link" as CFString
 #endif
 
 var failed = false

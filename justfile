@@ -1,98 +1,131 @@
-# PrivateLink — every http/https link opens a private Brave tab.
+#!/usr/bin/env just --justfile
+
+# PrivateLink — every http/https link on this Mac opens in a private Brave tab.
 #
-#   just build      compile + assemble the .app
-#   just install    copy to /Applications (admin prompt if it asks)
-#   just setdefault register as system handler for http + https
-#   just test       open a link through it and show the log
-#   just all        build + install + setdefault
+# Groups:
+#   just build       compile + assemble the .app
+#   just install     copy to /Applications (admin prompt if it asks)
+#   just setdefault  register as system handler for http + https
+#   just all         build + install + setdefault
+#   just test        open a link through it, check log, confirm self-quit
+#   just watch       tail the log live
+#   just revert      give http/https back to Safari
+#   just uninstall   unregister + delete the app
+#   just clean       remove build artifacts
+
+# ---- configuration -------------------------------------------------------
+
+APP         := "PrivateLink"
+BUNDLE_ID   := "org.private.link"
+APP_DIR     := APP + ".app"
+INSTALL_DIR := "/Applications/" + APP + ".app"
+LOG         := "/tmp/privatelink.log"
+LSREGISTER  := "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 
 default:
     @just --list
 
-# Compile and assemble PrivateLink.app
+# ---- build ---------------------------------------------------------------
+
+# Compile with SwiftPM and assemble + ad-hoc sign {{APP}}.app
+[group('build')]
 build:
     @./make.sh
 
-# Install to /Applications (uses sudo only if needed)
+# ---- install -------------------------------------------------------------
+
+# Install to /Applications (sudo only if a plain copy isn't possible)
+[group('install')]
 install: build
     #!/usr/bin/env bash
     set -euo pipefail
-    if cp -R PrivateLink.app /Applications/ 2>/dev/null; then
-        echo "installed /Applications/PrivateLink.app"
+    if cp -R {{APP_DIR}} /Applications/ 2>/dev/null; then
+        echo "installed {{INSTALL_DIR}}"
     else
         echo "/Applications not writable without sudo — you may be prompted:"
-        sudo cp -R PrivateLink.app /Applications/
-        echo "installed /Applications/PrivateLink.app (via sudo)"
+        sudo cp -R {{APP_DIR}} /Applications/
+        echo "installed {{INSTALL_DIR}} (via sudo)"
     fi
 
-# Compile the 'set as default' helper
+# ---- become the system default for http/https ----------------------------
+
+# Compile the 'set as default' helper (also used by revert/uninstall)
+[group('default')]
 setdefault-bin:
     #!/usr/bin/env bash
     set -euo pipefail
     swiftc -o setdefault setdefault.swift 2>/dev/null
 
-# Register PrivateLink as the system default for http:// and https://
+# Register {{APP}} as the system default handler for http:// and https://
+[group('default')]
 setdefault: setdefault-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    BID=dev.brickpop.privatelink
     # Make sure LaunchServices knows about the installed app
-    LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
-    "$LSREGISTER" -f /Applications/PrivateLink.app
-    # Older macOS: the deprecated API writes the user LS database with no sudo.
+    {{LSREGISTER}} -f {{INSTALL_DIR}}
+    # LSSetDefaultHandlerForURLScheme writes the per-user LS database, no sudo.
     # ('err -54' on the second scheme is benign; the database still updates —
     # verification below is what matters, so don't let set -e trip on it.)
     ./setdefault || true
-    # Sonoma+ rewrote default-browser handling: the API above updates the LS
-    # database, but browsers must also confirm via the system picker. Verify:
-    if ./setdefault | grep -q "default=$BID"; then
-        echo "OK: PrivateLink is now the default for http and https"
+    # macOS also guards the 'default browser' setting with a system prompt. Verify:
+    if ./setdefault | grep -q "default={{BUNDLE_ID}}"; then
+        echo "OK: {{APP}} is now the default for http and https"
     else
         echo "NOTE: macOS may still show the 'default web browser' prompt on first link."
-        echo "If a dialog appears, choose PrivateLink. (System policy, not our bug.)"
+        echo "If a dialog appears, choose {{APP}}. (System policy, not our bug.)"
     fi
 
-# End-to-end test: route a link through the installed app
+# Everything: build, install, register as default
+[group('default')]
+all: install setdefault
+    @echo "Done. Test with: just test"
+
+# ---- verify --------------------------------------------------------------
+
+# End-to-end test: route a link through the installed app, check log + self-quit
+[group('verify')]
 test:
     #!/usr/bin/env bash
     set -uo pipefail
-    rm -f /tmp/privatelink.log
+    rm -f {{LOG}}
     open https://example.com   # goes through whatever handler is registered
     sleep 4
-    echo "--- /tmp/privatelink.log ---"
-    cat /tmp/privatelink.log 2>/dev/null || echo "(no log — app not invoked; handler not default yet?)"
-    # App should have quit itself
-    if pgrep -x PrivateLink >/dev/null; then
-        echo "WARNING: PrivateLink still running"
+    echo "--- {{LOG}} ---"
+    cat {{LOG}} 2>/dev/null || echo "(no log — app not invoked; handler not default yet?)"
+    if pgrep -x {{APP}} >/dev/null; then
+        echo "WARNING: {{APP}} still running (should self-quit after handoff)"
     else
         echo "OK: app launched Brave and quit itself"
     fi
 
 # Watch the log live
+[group('verify')]
 watch:
-    tail -f /tmp/privatelink.log
+    tail -f {{LOG}}
 
-# Everything: build, install, register as default, verify
-all: install setdefault
-    @echo "Done. Test with: just test"
+# ---- undo ----------------------------------------------------------------
 
-# Unregister and remove from /Applications
+# Give http/https back to Safari (safety valve)
+[group('undo')]
+revert: setdefault-bin
+    #!/usr/bin/env bash
+    set -euo pipefail
+    swiftc -o setdefault-safari -DSafari setdefault.swift 2>/dev/null || true
+    ./setdefault-safari || echo "could not revert via API; do it in System Settings if needed"
+
+# Unregister and remove from /Applications, handing links back to Safari
+[group('undo')]
 uninstall: setdefault-bin
     #!/usr/bin/env bash
     set -euo pipefail
-    LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister
-    "$LSREGISTER" -u /Applications/PrivateLink.app 2>/dev/null || true
-    rm -rf /Applications/PrivateLink.app
-    # Hand http/https back to Safari
+    {{LSREGISTER}} -u {{INSTALL_DIR}} 2>/dev/null || true
+    rm -rf {{INSTALL_DIR}}
     swiftc -o setdefault-safari -DSafari setdefault.swift 2>/dev/null || true
     ./setdefault-safari 2>/dev/null || true
     echo "uninstalled"
 
-# Give http/https back to Safari (safety valve)
-revert: setdefault-bin
-    swiftc -o setdefault-safari -DSafari setdefault.swift 2>/dev/null || true
-    ./setdefault-safari || echo "could not revert via API; do it in System Settings if needed"
-
+# Remove build artifacts (app bundle, helper binaries, log)
+[group('undo')]
 clean:
-    rm -rf .build PrivateLink.app setdefault setdefault-safari
-    rm -f /tmp/privatelink.log
+    rm -rf .build {{APP_DIR}} setdefault setdefault-safari
+    rm -f {{LOG}}

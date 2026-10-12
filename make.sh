@@ -18,7 +18,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key>              <string>PrivateLink</string>
     <key>CFBundleDisplayName</key>       <string>PrivateLink</string>
-    <key>CFBundleIdentifier</key>        <string>dev.brickpop.privatelink</string>
+    <key>CFBundleIdentifier</key>        <string>org.private.link</string>
     <key>CFBundleExecutable</key>        <string>PrivateLink</string>
     <key>CFBundleVersion</key>           <string>1.0</string>
     <key>CFBundleShortVersionString</key><string>1.0</string>

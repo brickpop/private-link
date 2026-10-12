@@ -5,7 +5,7 @@
 // with the URL. We forward the URL to Brave as a private (incognito) tab
 // and quit immediately — the app exists only for that handoff.
 //
-// Verified paths (empirical, this machine, 2026-10-12):
+// Verified paths (empirical, this machine, 2026-10-12, Brave 148 / macOS 15.7):
 //   A. `open -n -g -a Brave --args --new-window --incognito <url>`
 //      -> Chromium's second-instance mechanism forwards the URL to the
 //         running Brave as a PRIVATE window with one tab. No permissions
@@ -13,7 +13,7 @@
 //   B. AppleScript: `make new window with properties {mode:"incognito", URL:…}`
 //      -> same result, but requires a one-time Automation (TCC) grant for
 //         *our* identity. Ad-hoc code signing gives a new identity per
-//         rebuild, so the prompt reappears after `just all`; treat as bonus.
+//         rebuild, so the prompt reappears after each `just all`; treat as bonus.
 //   C. plain NSWorkspace open — normal tab; only so a link is never lost.
 //
 // Order per link: B (silent success if already granted), else A, else C.
