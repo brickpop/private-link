@@ -2,7 +2,7 @@
 .build/
 
 # Assembled bundle (produced by make.sh)
-/PrivateBeacon.app/
+/PrivateLink.app/
 
 # Compiled helpers
 /setdefault

@@ -1,4 +1,4 @@
-// PrivateBeacon — a tiny browser shim for macOS.
+// PrivateLink — a tiny browser shim for macOS.
 //
 // Registered as the system default handler for http/https. When any app
 // asks the system to open a web link, LaunchServices launches *this* app
@@ -122,7 +122,7 @@ final class Delegate: NSObject, NSApplicationDelegate {
     private func log(_ msg: String) {
         let line = "[\(Date())] \(msg)\n"
         FileHandle.standardError.write(Data(line.utf8))
-        let p = "/tmp/privatebeacon.log"
+        let p = "/tmp/privatelink.log"
         if !FileManager.default.fileExists(atPath: p) {
             FileManager.default.createFile(atPath: p, contents: nil)
         }

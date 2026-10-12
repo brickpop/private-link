@@ -2,11 +2,11 @@
 import PackageDescription
 
 let package = Package(
-    name: "PrivateBeacon",
+    name: "PrivateLink",
     platforms: [.macOS(.v11)],
     targets: [
         .executableTarget(
-            name: "PrivateBeacon",
+            name: "PrivateLink",
             path: "Sources"
         )
     ]
