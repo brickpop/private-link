@@ -1,0 +1,15 @@
+# SwiftPM
+.build/
+
+# Assembled bundle (produced by make.sh)
+/PrivateBeacon.app/
+
+# Compiled helpers
+/setdefault
+/setdefault-safari
+
+# Logs
+*.log
+
+# macOS cruft
+.DS_Store
