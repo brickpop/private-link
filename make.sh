@@ -40,8 +40,7 @@ PLIST
 
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
-# Ad-hoc signature: keeps a stable-ish identity so TCC grants survive rebuilds
-# (ad-hoc identities do change per build; expect to re-approve once per rebuild)
+# Ad-hoc signature: enough for a local, self-built app
 codesign --force --sign - "$APP"
 
 echo "built $APP"

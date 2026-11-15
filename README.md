@@ -1,79 +1,65 @@
 # PrivateLink
 
-Every `http://` / `https://` link on this Mac opens in a **private Brave window** (a single tab).
+Make every `http://` and `https://` link on your Mac open in a **private browser window**.
 
-PrivateLink is a phantom app (no Dock icon, no UI, quits itself after each
-handoff) registered as the system default handler for http/https. When any
-app asks the system to open a web link, LaunchServices launches PrivateLink
-with the URL; it tells Brave to open the link privately and terminates.
+PrivateLink is a tiny background app with no Dock icon and no UI. You set it as the default browser. When you click a link, it passes the link to your browser in private mode and then quits.
 
-## Quick start
+## Setup
+
+Requires macOS, Xcode command line tools, [`just`](https://github.com/casey/just) ≥ 1.27 and one of the supported browsers.
 
 ```sh
-just all        # build + install to /Applications + set as system default
-just test       # open https://example.com through it, check log, confirm self-quit
-just watch      # tail the log live (/tmp/privatelink.log)
+just all     # build, install to /Applications, set as default browser
+just test    # open a test link and check that it worked
 ```
 
-## Justfile
+If macOS asks you to pick a default browser, choose **PrivateLink**.
 
-Everything is driven from the justfile — there is no separate build script to
-remember. `make.sh` is an implementation detail called by `just build`;
-helper binaries (`setdefault`, `setdefault-safari`) are compiled on demand by
-the recipes that need them and are git-ignored.
+## Supported browsers
 
-Recipes are grouped (needs `just >= 1.27`; enabled via the shebang):
+PrivateLink uses the **first installed** browser from this list:
 
-| group        | recipes | what they do |
-|--------------|---------|--------------|
-| `[build]`    | `build` | compile (SwiftPM) + assemble + ad-hoc sign `PrivateLink.app` |
-| `[install]`  | `install` | copy to `/Applications` (sudo only if prompted) |
-| `[default]`  | `setdefault`, `all` | register as system default for http + https; `all` = install + setdefault |
-| `[verify]`   | `test`, `watch` | route a link through the handler and verify log + self-quit; tail log |
-| `[undo]`     | `revert`, `uninstall`, `clean` | hand links back to Safari; unregister + delete; remove artifacts |
+1. Brave
+2. Google Chrome
+3. Chromium
+4. Microsoft Edge
+5. Vivaldi
+6. Firefox
 
-`just --list --group undo` filters a single group.
+To change the order or add a browser, edit the `browsers` list at the top of `Sources/main.swift` and run `just all`.
 
-## How it works (per link)
+## Commands
 
-1. **Path B (bonus)** — Brave's AppleScript dictionary:
-   `make new window with properties {mode:"incognito", URL:…}`.
-   Needs a one-time **Automation (TCC) prompt** — click **Allow**.
-   Note: ad-hoc code signing = a new code identity per rebuild, so the
-   prompt reappears after each `just all`. Denial is harmless (falls back).
-2. **Path A (workhorse)** — `open -n -g -a Brave --args --new-window --incognito <url>`.
-   Chromium's second-instance mechanism forwards the link to the running
-   Brave as a Private window with one tab. Needs **no permissions**.
-3. **Path C** — plain `NSWorkspace` open (normal tab) so a link is never lost.
+| Command          | What it does                                      |
+|------------------|---------------------------------------------------|
+| `just all`       | Build, install and set as default                 |
+| `just build`     | Build `PrivateLink.app`                           |
+| `just install`   | Copy it to `/Applications`                        |
+| `just setdefault`| Set it as the handler for http and https          |
+| `just test`      | Open a test link, show the log, check it quit     |
+| `just watch`     | Follow the log live (`/tmp/privatelink.log`)      |
+| `just revert`    | Make Safari the default browser again             |
+| `just uninstall` | Make Safari the default again and delete the app  |
+| `just clean`     | Delete build output                               |
 
-## Known limitation
+## How it works
 
-If **Brave is not running at all**, a cold Brave ignores forwarded
-`--incognito` flags (Chromium parses them only via the second-instance
-path) and opens a normal window. Keep Brave running (Dock pin or login item)
-for 100% private coverage.
+If the browser isn't running, PrivateLink starts it in the background without opening a window (Chromium browsers only, using `--no-startup-window`). Firefox doesn't need this step. Then PrivateLink runs `open -n -g -a <browser> --args <private flags> <url>`, and the running browser opens the link in a private window. If that fails, the link opens in a normal window of the same browser. If no supported browser is installed, it opens in Safari. A link is never dropped.
 
-Private windows can't be enumerated by any script API (Brave's dictionary
-exposes no private-window query, and private sessions leave no on-disk
-traces) — verify by glancing at Brave: private windows carry the dark
-"Private" theme and new links land as single tabs there.
+## Limitations
 
-## Layout
+- **The first link after the browser starts takes a little longer**, because PrivateLink waits for the browser to start.
+- **The browser may restore your last session.** If it's set to reopen previous windows on startup, those normal windows reappear next to the private one.
+- **There is no automatic check that the window is private.** No script can list a browser's private windows. Look at the window instead.
 
-- `Sources/main.swift` — the app (NSApplicationDelegate, `.prohibited` policy)
-- `Package.swift` — SwiftPM manifest (`swift build -c release`)
-- `make.sh` — bundle assembly called by `just build` (Info.plist declares
-  `CFBundleURLTypes` for http+https, `LSUIElement`) + ad-hoc `codesign`
-- `setdefault.swift` — `LSSetDefaultHandlerForURLScheme` for
-  http/https (deprecated but the only API; writes the per-user LS database,
-  no sudo; compiled with `-DSafari` by `just revert` to hand links back)
-- `justfile` — the entrypoint; all recipes and shared config (bundle id,
-  log path, LaunchServices tool) live there
-- app name / bundle id: `PrivateLink` / `org.private.link`
+## Project layout
 
-## Verified on this machine (2026-10-12, Brave 148, macOS 15.7)
+| File               | Purpose                                                                 |
+|--------------------|-------------------------------------------------------------------------|
+| `Sources/main.swift` | The app                                                               |
+| `Package.swift`    | SwiftPM manifest                                                        |
+| `make.sh`          | Puts the `.app` together (Info.plist, URL schemes) and signs it         |
+| `setdefault.swift` | Sets the default http/https handler. Built with `-DSafari` for `revert` |
+| `justfile`         | All commands and shared settings (bundle id `org.private.link`, log path) |
 
-- `open https://example.com` → private Brave window; app quit itself ✔
-- sequential links (http + https) → all forwarded, app never lingered ✔
-- `LSCopyDefaultHandlerForURLScheme` = `org.private.link` for both schemes ✔
-- cold Brave (not running) → opens normal window — documented limitation ✔
+The earlier Brave-only version was tested on macOS 15.7 with Brave 148. Firefox has been checked: `--private-window` opens a private window whether or not Firefox is already running. The Chromium browsers have not been tested with the multi-browser version yet.

@@ -1,6 +1,6 @@
 #!/usr/bin/env just --justfile
 
-# PrivateLink — every http/https link on this Mac opens in a private Brave tab.
+# PrivateLink — every http/https link on this Mac opens in a private browser window.
 #
 # Groups:
 #   just build       compile + assemble the .app
@@ -95,7 +95,7 @@ test:
     if pgrep -x {{APP}} >/dev/null; then
         echo "WARNING: {{APP}} still running (should self-quit after handoff)"
     else
-        echo "OK: app launched Brave and quit itself"
+        echo "OK: app handed the link off and quit itself"
     fi
 
 # Watch the log live

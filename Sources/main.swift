@@ -1,29 +1,34 @@
-// PrivateLink — a tiny browser shim for macOS.
-//
-// Registered as the system default handler for http/https. When any app
-// asks the system to open a web link, LaunchServices launches *this* app
-// with the URL. We forward the URL to Brave as a private (incognito) tab
-// and quit immediately — the app exists only for that handoff.
-//
-// Verified paths (empirical, this machine, 2026-10-12, Brave 148 / macOS 15.7):
-//   A. `open -n -g -a Brave --args --new-window --incognito <url>`
-//      -> Chromium's second-instance mechanism forwards the URL to the
-//         running Brave as a PRIVATE window with one tab. No permissions
-//         needed. This is the workhorse.
-//   B. AppleScript: `make new window with properties {mode:"incognito", URL:…}`
-//      -> same result, but requires a one-time Automation (TCC) grant for
-//         *our* identity. Ad-hoc code signing gives a new identity per
-//         rebuild, so the prompt reappears after each `just all`; treat as bonus.
-//   C. plain NSWorkspace open — normal tab; only so a link is never lost.
-//
-// Order per link: B (silent success if already granted), else A, else C.
-//
-// Known limitation: if Brave is NOT running at all, a cold Brave ignores
-// forwarded --incognito flags (Chromium parses them only on the
-// second-instance path) and opens a normal window. Keep Brave running
-// (Dock pin / login item) for 100% private coverage.
+// PrivateLink — default http/https handler that forwards each link to a
+// browser's private window, then quits.
 
 import Cocoa
+
+struct Browser {
+    let bundleId: String
+    let privateArgs: [String] // put in front of the URL
+    // How to start the browser without opening a window, so a private window
+    // can be handed to it. nil: the browser honours privateArgs on a cold
+    // start, so there is no need to start it first.
+    let startArgs: [String]?
+}
+
+// Chromium browsers ignore --incognito on a cold start (they only read it when
+// a second instance forwards it), so they are started window-less first.
+let chromiumStart = ["--no-startup-window"]
+
+// Order of preference: the first installed browser wins.
+let browsers = [
+    Browser(bundleId: "com.brave.Browser",     privateArgs: ["--new-window", "--incognito"], startArgs: chromiumStart),
+    Browser(bundleId: "com.google.Chrome",     privateArgs: ["--new-window", "--incognito"], startArgs: chromiumStart),
+    Browser(bundleId: "org.chromium.Chromium", privateArgs: ["--new-window", "--incognito"], startArgs: chromiumStart),
+    Browser(bundleId: "com.microsoft.edgemac", privateArgs: ["--new-window", "--inprivate"], startArgs: chromiumStart),
+    Browser(bundleId: "com.vivaldi.Vivaldi",   privateArgs: ["--new-window", "--incognito"], startArgs: chromiumStart),
+    Browser(bundleId: "org.mozilla.firefox",   privateArgs: ["--private-window"],            startArgs: nil),
+]
+
+// Last resort when no listed browser is installed. Must be an explicit app:
+// a plain NSWorkspace.open(url) would route the link back to PrivateLink.
+let fallbackBundleId = "com.apple.Safari"
 
 let app = NSApplication.shared
 let delegate = Delegate()
@@ -35,88 +40,90 @@ app.run()
 final class Delegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    // Link batches waiting for their browser to start. Quit only when none
+    // are left: another batch can arrive while one is waiting.
+    private var pending = 0
+
     // LaunchServices delivers each clicked link here.
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls { forward(url) }
-        NSApp.terminate(nil) // handoff done; Brave owns the windows now
-    }
-
-    private let braveBid = "com.brave.Browser"
-    // Sticky within one launch: once TCC denies path B, skip it for the rest
-    // of this run so we don't deny-loop the prompt on every link.
-    private var automationDenied = false
-
-    private func forward(_ url: URL) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
-        if !automationDenied, privateTabViaAppleScript(url) { return }
-        if privateTabViaOpenFlags(url) { return }
-        plainOpen(url)
-    }
-
-    // Path B (bonus): Brave's own scripting command — one private window,
-    // one tab. Requires the one-time Automation consent prompt (Allow).
-    private func privateTabViaAppleScript(_ url: URL) -> Bool {
-        let esc = url.absoluteString
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let src = """
-        tell application id "\(braveBid)"
-            make new window with properties {mode:"incognito", URL:"\(esc)"}
-        end tell
-        """
-        var error: NSDictionary?
-        NSAppleScript(source: src)?.executeAndReturnError(&error)
-        if let error {
-            let num = error[NSAppleScript.errorNumber] as? Int ?? 0
-            if num == -1743 {
-                automationDenied = true
-                log("B: no automation grant; falling back for \(url)")
-            } else {
-                log("B error (\(num)): \(url)")
+        let links = urls.filter { ["http", "https"].contains($0.scheme?.lowercased() ?? "") }
+        let installed = browsers.lazy.compactMap { b in
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: b.bundleId).map { (b, $0) }
+        }.first
+        guard case let (browser, appURL)? = installed else {
+            for url in links {
+                log("WARN: no supported browser installed; normal window in \(fallbackBundleId): \(url)")
+                plainOpen(url, bundleId: fallbackBundleId)
             }
-            return false
+            return quitIfIdle()
         }
-        log("B: private tab via AppleScript: \(url)")
-        return true
+        let handOff = { for url in links { self.forward(url, browser: browser, appURL: appURL) } }
+        let running = !NSRunningApplication.runningApplications(withBundleIdentifier: browser.bundleId).isEmpty
+        guard !running, let startArgs = browser.startArgs else {
+            handOff()
+            return quitIfIdle()
+        }
+        pending += 1
+        start(browser, appURL: appURL, args: startArgs) {
+            handOff()
+            self.pending -= 1
+            self.quitIfIdle()
+        }
     }
 
-    // Path A (workhorse): `open -n -g -a Brave --args --new-window --incognito <url>`.
-    // Verified: with Brave running this opens the link in a Private window
-    // with a single tab. -g keeps focus on the app whose link we handled.
-    // We do not wait for `open`: the transient flagged Brave instance may
-    // raise its own Automation prompt; staying alive would make us quit
-    // before the user can answer it. Forward-and-go.
-    private func privateTabViaOpenFlags(_ url: URL) -> Bool {
-        guard let brave = NSWorkspace.shared.urlForApplication(withBundleIdentifier: braveBid) else {
-            log("A: Brave not found")
-            return false
+    private func quitIfIdle() {
+        if pending == 0 { NSApp.terminate(nil) } // handoff done
+    }
+
+    // Starts the browser in the background without a window, then calls done
+    // on the main thread. On failure it still calls done: the handoff will
+    // then cold-start the browser, at worst in a normal window.
+    private func start(_ browser: Browser, appURL: URL, args: [String], done: @escaping () -> Void) {
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = false
+        cfg.arguments = args
+        log("starting \(browser.bundleId)")
+        NSWorkspace.shared.openApplication(at: appURL, configuration: cfg) { _, error in
+            if let error { self.log("WARN: could not start \(browser.bundleId): \(error)") }
+            DispatchQueue.main.async(execute: done)
         }
+    }
+
+    private func forward(_ url: URL, browser: Browser, appURL: URL) {
+        if !openPrivate(url, browser: browser, appURL: appURL) {
+            log("WARN: normal window in \(browser.bundleId): \(url)")
+            plainOpen(url, bundleId: browser.bundleId)
+        }
+    }
+
+    // `open -n` starts a second browser instance with the private flags; a
+    // running browser takes the link over in a private window. -g keeps focus
+    // on the app whose link we handled. We do not wait for `open`: forward-and-go.
+    private func openPrivate(_ url: URL, browser: Browser, appURL: URL) -> Bool {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        proc.arguments = ["-n", "-g", "-a", brave.path, "--args",
-                          "--new-window", "--incognito", url.absoluteString]
+        proc.arguments = ["-n", "-g", "-a", appURL.path, "--args"] + browser.privateArgs + [url.absoluteString]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
-            log("A: forwarded via Brave flags: \(url)")
+            log("private window in \(browser.bundleId): \(url)")
             return true
         } catch {
-            log("A: flags launch failed: \(error)")
+            log("launch failed for \(browser.bundleId): \(error)")
             return false
         }
     }
 
-    // Path C: never drop the link.
-    private func plainOpen(_ url: URL) {
-        if let brave = NSWorkspace.shared.urlForApplication(withBundleIdentifier: braveBid) {
-            let cfg = NSWorkspace.OpenConfiguration()
-            cfg.activates = true
-            NSWorkspace.shared.open([url], withApplicationAt: brave, configuration: cfg, completionHandler: nil)
-        } else {
-            NSWorkspace.shared.open(url)
+    // Never drop the link.
+    private func plainOpen(_ url: URL, bundleId: String) {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
+            log("ERROR: \(bundleId) not found; link dropped: \(url)")
+            return
         }
-        log("C: WARN plain open (normal tab): \(url)")
+        let cfg = NSWorkspace.OpenConfiguration()
+        cfg.activates = true
+        NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg, completionHandler: nil)
     }
 
     private func log(_ msg: String) {
